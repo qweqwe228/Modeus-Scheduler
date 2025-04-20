@@ -3,103 +3,104 @@ import json
 import re
 from collections import defaultdict
 
+def normalize_day(day_str: str) -> str:
+    mapping = {
+        "пн": "понедельник",
+        "вт": "вторник",
+        "ср": "среда",
+        "чт": "четверг",
+        "пт": "пятница",
+        "сб": "суббота"
+    }
+    parts = day_str.split()
+    if not parts:
+        return day_str
+    abbrev = parts[0].lower().replace(".", "")
+    return mapping.get(abbrev, parts[0])
 
 def parse_schedule(url):
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=False, slow_mo=0)
         context = browser.new_context()
         page = context.new_page()
-
         try:
             page.goto(url, wait_until="networkidle", timeout=120000)
-
             if "sso.urfu.ru" in page.url:
                 page.wait_for_url("**/schedule-calendar/**", timeout=120000)
-
             page.wait_for_selector(".fc-view-container", timeout=30000)
             page.wait_for_selector(".fc-event", timeout=30000)
-
             headers = []
             for th in page.query_selector_all(".fc-day-header"):
-                date = th.get_attribute("data-date")
-                day = th.query_selector("span")
-                txt = day.inner_text().strip() if day else ""
-                if date and txt:
-                    headers.append((date, txt))
-
+                d = th.get_attribute("data-date")
+                day_el = th.query_selector("span")
+                t = day_el.inner_text().strip() if day_el else ""
+                if d and t:
+                    headers.append((d, t))
+            data = defaultdict(list)
             events = page.locator(".fc-event")
             total = events.count()
-
-            data = defaultdict(lambda: {"Лекция": [], "Практика": []})
-
             for i in range(total):
                 e = events.nth(i)
                 td_idx = e.evaluate(
                     """el => {
                         const td = el.closest('td');
-                        if (!td || !td.parentElement) return -1;
-                        return Array.from(td.parentElement.children).indexOf(td);
+                        return td && td.parentElement ? Array.from(td.parentElement.children).indexOf(td) : -1;
                     }"""
                 )
-                day_name = headers[td_idx - 1][1] if 1 <= td_idx <= len(headers) else "?"
-
+                raw_day = headers[td_idx - 1][1] if 1 <= td_idx <= len(headers) else "?"
+                day_name = normalize_day(raw_day)
                 e.hover()
-                page.wait_for_timeout(200)
-
-                title_el = e.locator(".fc-title")
-                time_el = e.locator(".fc-time")
-
-                title = title_el.inner_text().strip() if title_el else ""
-                time_txt = time_el.inner_text().strip() if time_el else ""
-                start = time_el.get_attribute("data-start") if time_el else None
+                page.wait_for_timeout(100)
+                raw_title = e.locator(".fc-title").inner_text().strip() if e.locator(".fc-title").count() > 0 else ""
+                title_no_num = re.sub(r'\s*\d+\s*$', '', raw_title)
+                subject = raw_title.split("/")[0].strip() if "/" in raw_title else title_no_num
+                time_txt = e.locator(".fc-time").inner_text().strip() if e.locator(".fc-time").count() > 0 else ""
+                start = e.locator(".fc-time").get_attribute("data-start") if e.locator(".fc-time").count() > 0 else None
                 if not start:
                     m = re.search(r"\d{1,2}:\d{2}", time_txt)
                     start = m.group(0) if m else "?"
-
-                kind = "Лекция" if "лекц" in title.lower() else "Практика"
-
+                kind = "Лекция" if "лекц" in raw_title.lower() else "Практика"
                 e.click()
-                page.wait_for_timeout(600)
-
-                team_el = page.locator("p:has-text('Команда') span.pull-right.team")
-                team_el.wait_for(state="visible", timeout=5000)
-                team = team_el.inner_text().strip() if team_el else ""
+                page.wait_for_timeout(300)
+                team_raw = page.locator("p:has-text('Команда') span.pull-right.team")
+                team = team_raw.inner_text().strip() if team_raw.count() > 0 else ""
                 m = re.search(r"(АТ[-]?\d+)", team, re.I)
                 team = m.group(1) if m else "?"
-
                 t_loc = page.locator("li:has(.title:has-text('Преподаватели:')) div.ng-star-inserted")
                 teachers = set()
                 for j in range(t_loc.count()):
-                    t = t_loc.nth(j).inner_text().strip()
-                    if t and "преподаватели" not in t.lower():
-                        teachers.add(t)
-
+                    raw = t_loc.nth(j).inner_text().strip()
+                    for part in raw.splitlines():
+                        n = part.strip()
+                        if n and "преподаватели" not in n.lower():
+                            teachers.add(n)
+                a_loc = page.locator("li:has-text('Место и время')")
+                place_and_time = ""
+                if a_loc.count() > 0:
+                    raw_text = a_loc.first.inner_text().strip()
+                    place_and_time = re.sub(r"^\(?\s*Место и время\s*\)?\s*", "", raw_text, flags=re.IGNORECASE).strip()
+                else:
+                    a_loc = page.locator("li:has-text('Место')")
+                    if a_loc.count() > 0:
+                        raw_text = a_loc.first.inner_text().strip()
+                        place_and_time = re.sub(r"^\(?\s*Место\s*\)?\s*", "", raw_text, flags=re.IGNORECASE).strip()
                 entry = {
-                    "день недели": day_name,
-                    "время": start,
-                    "заголовок": title,
-                    "преподаватели": list(teachers)
+                    "предмет": subject,
+                    "тип занятия": kind,
+                    "день": day_name,
+                    "преподаватели": list(teachers),
+                    "Место и время": place_and_time
                 }
-
-                data[team][kind].append(entry)
-
+                data[team].append(entry)
                 page.click("body")
-                page.wait_for_timeout(200)
-
-            for team in data:
-                for kind in data[team]:
-                    seen = set()
-                    for ev in data[team][kind]:
-                        ev["преподаватели"] = [t for t in ev["преподаватели"] if not (t in seen or seen.add(t))]
-
+                page.wait_for_timeout(100)
             return data
-
-        except Exception:
+        except Exception as e:
+            print("Ошибка:", e)
             return None
         finally:
             context.close()
             browser.close()
-
 
 if __name__ == "__main__":
     url = (
@@ -108,8 +109,10 @@ if __name__ == "__main__":
         "%22attendee%22:%5B%5D%7D&timeZone=%22Asia%2FYekaterinburg%22"
         "&calendar=%7B%22view%22:%22agendaWeek%22,%22date%22:%222025-03-17%22%7D&grid=%22Grid.07%22"
     )
-
     result = parse_schedule(url)
     if result:
         with open("schedule_by_team.json", "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
+        print("Данные сохранены в schedule_by_team.json")
+    else:
+        print("Ошибка парсинга")
