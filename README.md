@@ -24,6 +24,8 @@ Telegram-бот, который автоматически создает иде
 ## 🤖 Ссылка на бота  
 [▶️ Перейти в Telegram](https://t.me/ModeusScheduleBot)  
 
+
+[▶️ Скачать демонстрационные json-файлы](https://drive.google.com/drive/folders/1qNJ8Opc5M2NMcnF-rMag1-RW3lLMytWJ)  
 ---
 <div align="center">
   <sub>Bolivia Gang | РИ-140917/18 | 2025</sub>
